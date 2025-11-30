@@ -21,9 +21,11 @@ The Agent Orchestrator Framework is a task queue management system for AI agents
 ├── command/        # Custom slash command definitions
 │   ├── agent-start.md
 │   ├── agent-run.md
+│   ├── agent-run-parallel.md  # NEW (Phase 2): Parallel execution
 │   ├── agent-status.md
-│   ├── agent-cancel.md    # NEW: Cancel tasks
-│   └── agent-clean.md     # NEW: Cleanup old tasks
+│   ├── agent-retry.md         # NEW (Phase 2): Retry failed tasks
+│   ├── agent-cancel.md
+│   └── agent-clean.md
 └── agent/          # Sub-agent definitions
     └── coder.md
 ```
@@ -45,22 +47,25 @@ Sub-agents are specialized agents defined in `.opencode/agent/` that perform act
 
 #### 3. Custom Commands
 Custom commands are defined in `.opencode/command/` and act as the user interface to the orchestrator:
-- **`/agent:start`**: Queues a new task
+- **`/agent:start`**: Queues a new task (with optional retry/priority settings)
 - **`/agent:run`**: Executes the next pending task
-- **`/agent:status`**: Shows task queue status, reconciles completed tasks, and detects failures
+- **`/agent:run-parallel`**: Executes multiple pending tasks concurrently (NEW - Phase 2)
+- **`/agent:status`**: Shows task queue status, reconciles completed tasks, detects failures, and triggers auto-retries
+- **`/agent:retry`**: Manually retries a failed task (NEW - Phase 2)
 - **`/agent:cancel`**: Cancels a running or pending task
 - **`/agent:clean`**: Removes old task files based on filter criteria
 
 ## Workflow
 
-### 1. Task Creation (`/agent:start <agent_name> <prompt>`)
+### 1. Task Creation (`/agent:start <agent_name> <prompt> [options]`)
 
 **Command File:** `.opencode/command/agent-start.md`
 
 **What Happens:**
 1. The command invokes the "Setup Assistant" role
 2. Generates a unique task ID using timestamp: `task_<timestamp>`
-3. Creates a task definition file at `.gemini/agents/tasks/<Task_ID>.json`:
+3. Parses optional flags: `--max-retries N`, `--auto-retry`, `--priority N`
+4. Creates a task definition file at `.gemini/agents/tasks/<Task_ID>.json`:
    ```json
    {
      "taskId": "task_1234567890",
@@ -69,15 +74,21 @@ Custom commands are defined in `.opencode/command/` and act as the user interfac
      "prompt": "User's task description",
      "planFile": ".gemini/agents/plans/task_1234567890_plan.md",
      "logFile": ".gemini/agents/logs/task_1234567890.log",
-     "createdAt": "2025-12-01T00:00:00Z"
+     "createdAt": "2025-12-01T00:00:00Z",
+     "retryCount": 0,
+     "maxRetries": 3,
+     "autoRetry": false,
+     "priority": 5,
+     "parentTaskId": null
    }
    ```
-4. Creates an empty plan file at `.gemini/agents/plans/<Task_ID>_plan.md` with the task prompt
-5. Responds: "Task <Task_ID> created for <agent_name>."
+5. Creates an empty plan file at `.gemini/agents/plans/<Task_ID>_plan.md` with the task prompt
+6. Responds: "Task <Task_ID> created for <agent_name>."
 
 **Key Points:**
 - Tasks start in `pending` status
 - Each task gets a unique ID, plan file, and log file path
+- Optional retry and priority settings can be configured at creation
 - Multiple tasks can be queued
 
 ### 2. Task Execution (`/agent:run`)
@@ -121,31 +132,88 @@ Custom commands are defined in `.opencode/command/` and act as the user interfac
 - Completion is signaled via a `.done` file (not by exit status)
 - The workspace can be the current directory or a dedicated workspace
 
-### 4. Status Check and Reconciliation (`/agent:status`)
+### 4. Parallel Task Execution (`/agent:run-parallel [max_concurrent]`)
+
+**Command File:** `.opencode/command/agent-run-parallel.md` (NEW - Phase 2)
+
+**What Happens:**
+1. The command invokes the "Parallel Task Launcher" role
+2. Counts currently running tasks
+3. Calculates available slots: `max_concurrent - running_count`
+4. Finds the oldest pending tasks (up to available slots)
+5. Launches each task in the background (same as `/agent:run`)
+6. Records PIDs for all launched tasks
+7. Responds: "Started N task(s): task_123, task_456 (PIDs: 12345, 12346)"
+
+**Key Points:**
+- Default concurrency limit: 3 tasks
+- Respects system resources by limiting parallel execution
+- Each task runs independently in its own process
+- Use `/agent:status` to monitor progress of all running tasks
+
+### 5. Task Retry (`/agent:retry <task_id> [max_retries] [--auto]`)
+
+**Command File:** `.opencode/command/agent-retry.md` (NEW - Phase 2)
+
+**What Happens:**
+1. The command invokes the "Task Retry Manager" role
+2. Validates the task exists and is in `failed` state
+3. Extracts original task info (agent, prompt, error)
+4. Checks if retry limit has been reached
+5. Creates a new task with:
+   - Same agent and prompt as original
+   - Incremented `retryCount`
+   - Linked via `parentTaskId` to original task
+   - Optional `autoRetry` flag for automatic future retries
+   - Updated `retryHistory` with failure details
+6. Creates a plan file documenting the retry attempt
+7. Updates original task with `retriedBy` field
+8. Responds: "Task task_XXX created as retry for task_YYY (attempt 2/3)"
+
+**Key Points:**
+- Only failed tasks can be retried
+- Retry count is tracked and enforced (default max: 3)
+- Auto-retry flag enables automatic retries on future failures
+- Full audit trail maintained via retryHistory
+- Original task context is preserved
+
+### 6. Status Check and Reconciliation (`/agent:status`)
 
 **Command File:** `.opencode/command/agent-status.md`
 
 **What Happens:**
-1. The command invokes the "Status Reporter" role
+1. The command invokes the "Status Reporter and Auto-Retry Manager" role
 2. **Reconciliation Phase:**
    - Finds all tasks with `"status": "running"`
    - Checks if a corresponding `.done` file exists → updates to `complete`
    - Checks if a corresponding `.error` file exists → updates to `failed` and captures error message
    - Checks if a corresponding `.cancelled` file exists → updates to `cancelled`
    - Checks if PID is still alive → if process died without sentinel file, marks as `failed`
-3. **Reporting Phase:**
+3. **Auto-Retry Phase (NEW - Phase 2):**
+   - For each newly failed task with `autoRetry: true`:
+     - Checks if `retryCount < maxRetries`
+     - Calculates exponential backoff delay (2^retryCount seconds)
+     - If delay has elapsed, automatically creates retry task
+     - Reports: "Auto-retrying task_XXX (attempt N/M)"
+4. **Reporting Phase:**
    - Reads all task JSON files
    - Outputs a Markdown table with columns:
-     - ID
+     - ID (with ↻ symbol for retry tasks)
      - Agent
-     - Status (✓ complete, ✗ failed, ⏱ running, ⏸ pending, ⊗ cancelled)
+     - Status (✓ complete, ✗ failed, ⏱ running, ⏸ pending, ⊗ cancelled, 🔄 auto-retry)
      - Prompt (truncated summary)
-     - Error (for failed tasks, shows error message)
+     - Retry (shows "N/M" if retryCount > 0)
+     - Error/Info (error message or retry countdown)
+5. **Summary Statistics:**
+   - Total, running, pending, completed, failed counts
+   - Number of failed tasks with auto-retry enabled
 
 **Key Points:**
 - Reconciliation happens on-demand, not automatically
 - Multiple sentinel files support different completion states
 - PID health checking detects crashed processes
+- Auto-retry triggers automatically for eligible tasks
+- Exponential backoff prevents thrashing (2s, 4s, 8s, 16s...)
 - Old completed tasks remain in the system unless manually cleaned
 
 ## Task States
@@ -237,7 +305,7 @@ Remove old task files to keep the workspace clean:
 
 ### Enhanced Task JSON Schema
 
-Tasks now include optional error tracking fields:
+Tasks now include retry tracking, priority, and error tracking fields:
 
 ```json
 {
@@ -249,7 +317,22 @@ Tasks now include optional error tracking fields:
   "logFile": ".gemini/agents/logs/task_1234567890.log",
   "createdAt": "2025-12-01T10:00:00Z",
   "pid": "12345",
-  "errorMessage": "Process terminated unexpectedly"
+  "errorMessage": "Process terminated unexpectedly",
+  "retryCount": 1,
+  "maxRetries": 3,
+  "autoRetry": true,
+  "priority": 5,
+  "parentTaskId": "task_1234567000",
+  "retriedBy": "task_1234567999",
+  "retriedAt": "2025-12-01T10:05:00Z",
+  "retryHistory": [
+    {
+      "attempt": 1,
+      "timestamp": "2025-12-01T10:00:00Z",
+      "error": "Network timeout",
+      "retriedFrom": "task_1234567000"
+    }
+  ]
 }
 ```
 
@@ -316,6 +399,145 @@ Tasks now include optional error tracking fields:
 /agent:clean all          # Remove all finished tasks
 ```
 
+### Example 5: Parallel Execution (Phase 2)
+```bash
+# Queue multiple tasks
+/agent:start coder Create user authentication module
+/agent:start coder Write API documentation
+/agent:start coder Implement logging system
+/agent:start coder Add unit tests
+/agent:start coder Create integration tests
+
+# Check queue status
+/agent:status
+# | ID         | Agent | Status | Prompt                    |
+# | task_12345 | coder | ⏸      | Create user auth...       |
+# | task_12346 | coder | ⏸      | Write API docs...         |
+# | task_12347 | coder | ⏸      | Implement logging...      |
+# | task_12348 | coder | ⏸      | Add unit tests...         |
+# | task_12349 | coder | ⏸      | Create integration...     |
+
+# Launch 3 tasks in parallel (default concurrency)
+/agent:run-parallel
+# Started 3 task(s): task_12345, task_12346, task_12347 (PIDs: 98765, 98766, 98767)
+# Running: 3/3 tasks
+
+# Check status - 3 running concurrently
+/agent:status
+# | ID         | Agent | Status | Prompt                    |
+# | task_12345 | coder | ⏱      | Create user auth...       |
+# | task_12346 | coder | ⏱      | Write API docs...         |
+# | task_12347 | coder | ⏱      | Implement logging...      |
+# | task_12348 | coder | ⏸      | Add unit tests...         |
+# | task_12349 | coder | ⏸      | Create integration...     |
+
+# After some tasks complete, launch remaining
+/agent:run-parallel
+# Started 2 task(s): task_12348, task_12349 (PIDs: 98768, 98769)
+# Running: 3/3 tasks
+
+# Launch with higher concurrency
+/agent:run-parallel 5
+# Started 5 task(s): ... (PIDs: ...)
+```
+
+### Example 6: Manual Retry (Phase 2)
+```bash
+# Task fails
+/agent:status
+# | ID         | Agent | Status | Prompt                | Error              |
+# | task_12345 | coder | ✗      | Deploy to prod...     | Network timeout    |
+
+# Retry the failed task
+/agent:retry task_12345
+# Task task_12346 created as retry for task_12345 (attempt 1/3)
+# Use /agent:run or /agent:run-parallel to execute the retry
+
+# Run the retry
+/agent:run
+# Started task task_12346 (PID: 98770)
+
+# Check status - shows retry link
+/agent:status
+# | ID         | Agent | Status | Prompt                | Retry |
+# | task_12345 | coder | ✗      | Deploy to prod...     |       |
+# | ↻ task_12346 | coder | ⏱      | Deploy to prod...     | 1/3   |
+```
+
+### Example 7: Auto-Retry (Phase 2)
+```bash
+# Create task with auto-retry enabled
+/agent:start coder "Deploy microservice to production" --max-retries 5 --auto-retry
+# Task task_12345 created for coder.
+# Max retries: 5
+# Auto-retry: enabled
+
+# Run the task
+/agent:run
+# Started task task_12345 (PID: 98765)
+
+# Task fails, check status
+/agent:status
+# Auto-retrying task_12345 (attempt 2/5)
+# | ID           | Agent | Status | Prompt                | Retry | Error/Info        |
+# | task_12345   | coder | ✗      | Deploy microser...    | 1/5   | Connection failed |
+# | ↻ task_12346 | coder | ⏸      | Deploy microser...    | 2/5   | auto-retry        |
+
+# Wait for backoff delay (2^1 = 2 seconds), then status again
+/agent:status
+# Task task_12346 automatically queued for execution
+
+# Run it
+/agent:run
+# Started task task_12346 (PID: 98766)
+
+# Fails again - longer backoff
+/agent:status
+# | ID           | Agent | Status | Prompt                | Retry | Error/Info        |
+# | task_12345   | coder | ✗      | Deploy microser...    | 1/5   | Connection failed |
+# | task_12346   | coder | ✗      | Deploy microser...    | 2/5   | Connection failed |
+# | ↻ task_12347 | coder | 🔄     | Deploy microser...    | 3/5   | retry in 4s       |
+
+# After 4 seconds, auto-retry triggers
+/agent:status
+# | ↻ task_12347 | coder | ⏸      | Deploy microser...    | 3/5   | auto-retry        |
+
+# Eventually succeeds
+/agent:run
+/agent:status
+# | ID           | Agent | Status | Prompt                | Retry |
+# | ↻ task_12347 | coder | ✓      | Deploy microser...    | 3/5   |
+```
+
+### Example 8: Combining Parallel Execution and Auto-Retry (Phase 2)
+```bash
+# Queue multiple tasks with auto-retry
+/agent:start coder "Task 1" --auto-retry
+/agent:start coder "Task 2" --auto-retry
+/agent:start coder "Task 3" --auto-retry
+/agent:start coder "Task 4" --auto-retry
+
+# Launch all in parallel
+/agent:run-parallel 4
+# Started 4 task(s): task_12345, task_12346, task_12347, task_12348
+
+# Some tasks fail, auto-retry kicks in
+/agent:status
+# Auto-retrying task_12345 (attempt 2/3)
+# Auto-retrying task_12347 (attempt 2/3)
+# | ID           | Agent | Status | Prompt     | Retry | Error/Info        |
+# | task_12345   | coder | ✗      | Task 1     | 1/3   | Error X           |
+# | task_12346   | coder | ✓      | Task 2     |       |                   |
+# | task_12347   | coder | ✗      | Task 3     | 1/3   | Error Y           |
+# | task_12348   | coder | ⏱      | Task 4     |       |                   |
+# | ↻ task_12349 | coder | ⏸      | Task 1     | 2/3   | auto-retry        |
+# | ↻ task_12350 | coder | ⏸      | Task 3     | 2/3   | auto-retry        |
+
+# Run retries in parallel
+/agent:run-parallel
+# Started 2 task(s): task_12349, task_12350
+```
+
 ## Extending the Framework
 
 ### Adding a New Sub-Agent
@@ -336,10 +558,12 @@ Tasks now include optional error tracking fields:
 - ✅ **Failure handling**: Failed tasks are now detected via PID health checks and `.error` files
 - ✅ **Task cleanup**: Now available via `/agent:clean` command
 
+### Resolved (Phase 2)
+- ✅ **Parallel execution**: Now available via `/agent:run-parallel` command with configurable concurrency
+- ✅ **Retry mechanism**: Now available via `/agent:retry` command with auto-retry and exponential backoff
+
 ### Current Limitations
 - **No automatic cleanup**: Completed tasks remain until manually removed via `/agent:clean`
-- **No task prioritization**: Tasks execute in FIFO order (oldest first)
-- **No parallel execution**: One task executes at a time (though they run async)
+- **No task prioritization**: Tasks execute in FIFO order (oldest first) - priority field exists but not yet used
 - **Manual reconciliation**: Status updates require explicit `/agent:status` call
 - **No timeout handling**: Long-running tasks are not automatically terminated
-- **No retry mechanism**: Failed tasks must be manually recreated
