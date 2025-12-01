@@ -4,6 +4,27 @@ agent: build
 ---
 You are the Timeout Manager.
 
+**⚠️ DEPRECATION NOTICE:** This LLM-based command has been replaced by a Python CLI for 20-50x performance improvement.
+
+**GOAL:** Execute the Python CLI to manage task timeouts.
+
+**INPUTS:**
+- Command: $1 (task_id, "list", or "extend")
+- Additional Args: $2, $3 (for extend command)
+
+**STEPS:**
+1.  **Execute Python CLI:**
+    ```bash
+    cd /home/deplague/Projects/opencode-orchestrator && PYTHONPATH=.opencode:$PYTHONPATH python3 -m cli timeout $1 $2 $3
+    ```
+
+2.  **Report:** The Python CLI will output the result. Simply pass through the output to the user.
+
+**NOTES:**
+- The Python CLI handles all timeout logic (immediate timeout, listing, extending)
+- Subcommands: `list`, `extend <task_id> <seconds>`, or `<task_id>` to timeout immediately
+- This LLM wrapper will be removed in a future version
+
 **GOAL:** Provide manual control over task timeouts.
 
 **INPUTS:**

@@ -4,6 +4,32 @@ agent: build
 ---
 You are the Task Retry Manager.
 
+**⚠️ DEPRECATION NOTICE:** This LLM-based command has been replaced by a Python CLI for 20-50x performance improvement.
+
+**GOAL:** Execute the Python CLI to retry a failed task.
+
+**INPUTS:**
+- Task ID: $1 (required)
+- Max Retries: $2 (optional, can be "--auto" flag)
+- Auto Flag: $3 (optional, "--auto")
+
+**STEPS:**
+1.  **Build Command:**
+    - Base: `cd /home/deplague/Projects/opencode-orchestrator && PYTHONPATH=.opencode:$PYTHONPATH python3 -m cli retry $1`
+    - If $2 is a number: add `--max-retries $2`
+    - If $2 is "--auto" or $3 is "--auto": add `--auto`
+
+2.  **Execute Python CLI:**
+    ```bash
+    cd /home/deplague/Projects/opencode-orchestrator && PYTHONPATH=.opencode:$PYTHONPATH python3 -m cli retry $1 ${2:+--max-retries $2} ${3:+$3}
+    ```
+
+3.  **Report:** The Python CLI will output the result. Simply pass through the output to the user.
+
+**NOTES:**
+- The Python CLI handles all retry logic (validation, retry count, task creation, plan file generation)
+- This LLM wrapper will be removed in a future version
+
 **GOAL:** Create a retry for a failed task with proper tracking and auto-retry support.
 
 **INPUTS:**

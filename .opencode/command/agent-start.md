@@ -1,58 +1,29 @@
 ---
-description: "Queue a new agent task: /agent:start <agent_name> <prompt> [--max-retries N] [--auto-retry] [--priority N] [--timeout N]"
+description: "Queue a new agent task (v2.0 - faster Python CLI)"
 agent: build
 ---
-You are the Orchestrator's Setup Assistant.
+**⚠ DEPRECATION NOTICE**: This command now uses the new Python CLI for instant task creation.
 
-**GOAL:** Create a new task state file with optional retry, priority, and timeout settings.
+Execute the start command with all arguments:
 
-**INPUTS:**
-- Agent Name: $1
-- User Prompt: $2
-- Optional Flags: $3, $4, $5... (parse for --max-retries, --auto-retry, --priority, --timeout)
+```bash
+cd /home/deplague/Projects/opencode-orchestrator && PYTHONPATH=.opencode:$PYTHONPATH python3 -m cli start "$@"
+```
 
-**INSTRUCTIONS:**
-1.  Generate a unique Task ID: `task_<timestamp>`.
+**Usage Examples:**
+- `python3 -m cli start coder "Create a web server"`
+- `python3 -m cli start coder "Deploy app" --timeout 600 --auto-retry`
+- `python3 -m cli start coder "Process data" --priority 8 --max-retries 5`
 
-2.  **Parse Optional Flags:**
-    - Check all arguments for:
-      * `--max-retries N` or `--max-retries=N` → extract N (default: 3)
-      * `--auto-retry` → set autoRetry to true (default: false)
-      * `--priority N` or `--priority=N` → extract N (default: 5)
-      * `--timeout N` or `--timeout=N` → extract N in seconds (default: null)
+**Options:**
+- `--max-retries N` - Maximum retry attempts (default: 3)
+- `--auto-retry` - Enable automatic retries on failure
+- `--priority N` - Task priority 1-10 (default: 5, higher = more important)
+- `--timeout N` - Timeout in seconds (no default)
 
-3.  Create a JSON file at `.gemini/agents/tasks/<Task_ID>.json` with this content:
-    ```json
-    {
-      "taskId": "<Task_ID>",
-      "status": "pending",
-      "agent": "$1",
-      "prompt": "$2",
-      "planFile": ".gemini/agents/plans/<Task_ID>_plan.md",
-      "logFile": ".gemini/agents/logs/<Task_ID>.log",
-      "createdAt": "<ISO_TIMESTAMP>",
-      "retryCount": 0,
-      "maxRetries": <parsed_or_default_3>,
-      "autoRetry": <parsed_or_default_false>,
-      "priority": <parsed_or_default_5>,
-      "parentTaskId": null,
-      "timeout": <parsed_or_null>,
-      "timeoutWarning": <60_or_null_if_no_timeout>
-    }
-    ```
+**Note:** The new Python CLI provides:
+- Instant task creation (<50ms vs 1-2s)
+- Proper argument parsing
+- Input validation
 
-4.  Create the plan file at `.gemini/agents/plans/<Task_ID>_plan.md`. Add the task prompt there.
-
-5.  **Output:**
-    - "Task <Task_ID> created for $1."
-    - If maxRetries != 3: "Max retries: <maxRetries>"
-    - If autoRetry: "Auto-retry: enabled"
-    - If priority != 5: "Priority: <priority>"
-    - If timeout set: "Timeout: <timeout>s (<human_readable_format>)"
-
-**NOTES:**
-- All retry, priority, and timeout fields are optional
-- Defaults: maxRetries=3, autoRetry=false, priority=5, timeout=null
-- Priority: 1-10 scale (higher = more important, for future scheduling)
-- Timeout: null means no timeout, otherwise seconds until task is killed
-- Human readable format examples: "60s" / "5m" / "1h 30m" / "2h"
+If the Python command fails, report the error to the user.

@@ -1,2 +1,4 @@
 .opencode/bun.lock
 .opencode/node_modules/
+__pycache__/
+.idea/
