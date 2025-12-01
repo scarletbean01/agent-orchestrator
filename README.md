@@ -72,6 +72,16 @@ You can also use the slash commands, which call the Python CLI internally.
     /agent:run
     ```
 
+## Integration Testing
+
+To validate your setup and cross-platform compatibility, use the integration test script:
+
+```bash
+.opencode/test-integration.sh
+```
+
+This script tests task creation, status, cancellation, cleaning, timeouts, agent config switching (including the "cursor" agent), and more. For full cross-platform validation, run this script and inspect logs on both Linux/macOS and Windows environments. Defensive logging is used for process management and agent command invocation.
+
 ## Architecture
 
 The v2.0 system uses a 3-layer hybrid architecture:

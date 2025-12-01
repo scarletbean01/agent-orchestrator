@@ -12,6 +12,8 @@ This document describes the file-system-based agent orchestration framework buil
 - 🎨 **Rich output**: ANSI colors, formatted tables, status icons
 - 🔄 **Soft migration**: Both LLM and Python CLI work during transition
 - ✅ **All features**: Status, start, run, cancel, retry, clean, timeout commands
+- 🪟 **Full Windows support**: Native cross-platform (Windows/macOS/Linux)
+- 🔌 **Agent decoupling**: Use any CLI tool (OpenCode, Augment, Cursor) via config file
 
 ### Quick Start (v2.0)
 
@@ -92,11 +94,60 @@ User → python3 -m cli start → Python CLI → Task Created (faster)
 │   ├── agent-clean.md          # ⚠️ Calls Python CLI
 │   └── agent-timeout.md        # ⚠️ Calls Python CLI
 │
-├── scripts/        # Helper scripts
-│   └── run-with-timeout.sh     # Wrapper for executing tasks with GNU timeout
+├── scripts/        # Helper scripts (legacy - no longer required)
+│   ├── run-with-timeout.sh     # Legacy Unix timeout wrapper (deprecated)
+│   └── run-with-timeout.ps1    # Legacy Windows timeout wrapper (deprecated)
+│
+├── agent-config.json           # 🆕 Agent configuration (decouples CLI tools)
 │
 └── agent/          # Sub-agent definitions (unchanged)
     └── coder.md                # Code generation sub-agent
+```
+
+### Components
+
+#### 0. Agent Configuration (NEW - Agent Decoupling)
+
+**File:** `.opencode/agent-config.json`
+
+This configuration file allows you to **decouple the orchestrator from specific agent implementations**. You can now use any CLI tool (OpenCode, Augment, Cursor, etc.) without modifying any code.
+
+**Example Configuration:**
+```json
+{
+  "agents": {
+    "coder": {
+      "command": "opencode",
+      "args": ["run", "{prompt}", "--agent", "coder"],
+      "description": "Default OpenCode agent"
+    },
+    "augment": {
+      "command": "augment",
+      "args": ["code", "--prompt", "{prompt}"],
+      "description": "Augment AI coding assistant"
+    },
+    "cursor": {
+      "command": "cursor",
+      "args": ["--task", "{prompt}"],
+      "description": "Cursor AI agent"
+    }
+  }
+}
+```
+
+**Variable Substitution:**
+- `{prompt}` - Full task prompt with completion instructions
+- `{taskId}` - Unique task identifier
+- `{agent}` - Agent name
+
+**Backward Compatibility:**
+If an agent is not found in the config, the Executor falls back to the default: `opencode run {prompt} --agent {agent}`
+
+**Usage:**
+```bash
+# Use augment instead of opencode - just update the config!
+python3 -m cli start augment "Refactor this function"
+python3 -m cli run
 ```
 
 ### Components
@@ -114,7 +165,7 @@ The **Python CLI** is a high-performance command-line interface that handles all
 - `core/repository.py`: Atomic JSON persistence with sentinel file management
 - `core/reconciler.py`: Task state reconciliation (checks PIDs, sentinel files)
 - `core/scheduler.py`: FIFO task scheduling with priority support
-- `core/executor.py`: Process launching via `run-with-timeout.sh`
+- `core/executor.py`: Cross-platform process launching with timeout handling (pure Python)
 - `core/formatter.py`: Pretty-printed tables with ANSI colors
 
 #### 2. LLM Commands (Thin Wrappers)
@@ -762,6 +813,68 @@ python3 -m cli status
 2. Define the command's description and behavior in the prompt
 3. Invoke it via `/<command_name>`
 
+## Cross-Platform Architecture (v2.1+)
+
+### Full Windows Support
+
+The orchestrator now has **native Windows support** without requiring WSL or Git Bash:
+
+**Process Management:**
+- **Windows**: Uses `tasklist` and `taskkill` for process checks and termination
+- **POSIX (Linux/macOS)**: Uses `os.kill()` with SIGTERM/SIGKILL signals
+- Centralized OS detection via `get_os_name()` helper
+
+**Process Creation:**
+- **Windows**: Uses `CREATE_NEW_PROCESS_GROUP` creation flag
+- **POSIX**: Uses `start_new_session=True` parameter
+- Both approaches provide proper process isolation
+
+**Timeout Handling:**
+- Pure Python implementation using `subprocess.wait(timeout=N)`
+- Cross-platform threading for async timeout monitoring
+- No shell scripts required (`.sh` and `.ps1` scripts now deprecated)
+
+**Agent Decoupling:**
+- Configuration-driven agent execution via `agent-config.json`
+- Zero code changes to switch between agents (OpenCode, Augment, Cursor, etc.)
+- Backward compatible - defaults to `opencode run` if agent not in config
+
+**Example Windows Usage:**
+```powershell
+# Windows PowerShell
+$env:PYTHONPATH = ".opencode;$env:PYTHONPATH"
+python -m cli status --watch
+python -m cli start coder "Create a web server"
+python -m cli run
+```
+
+**Example Linux/macOS Usage:**
+```bash
+# Unix shell
+export PYTHONPATH=.opencode:$PYTHONPATH
+python3 -m cli status --watch
+python3 -m cli start coder "Create a web server"
+python3 -m cli run
+```
+
+### Defensive Logging
+
+All cross-platform operations include defensive logging for debugging:
+- `DEBUG:` - Informational messages about process operations
+- `INFO:` - Task lifecycle events (launch, completion)
+- `WARNING:` - Recoverable errors or unexpected conditions
+- `ERROR:` - Critical failures requiring attention
+
+**Example Debug Output:**
+```
+INFO: Loaded 2 agent configurations from .opencode/agent-config.json
+DEBUG: Building command for agent 'coder' using config
+DEBUG: Launching task task_123 with command: opencode run...
+DEBUG: Using POSIX process creation (start_new_session=True)
+INFO: Task task_123 launched successfully (PID: 12345)
+DEBUG: Waiting for task task_123 (timeout: 120s)
+```
+
 ## Limitations and Considerations
 
 ### ✅ Resolved in v2.0
@@ -782,6 +895,12 @@ python3 -m cli status
 - ✅ **Retry mechanism**: Available via `python3 -m cli retry` with auto-retry support
 - ✅ **Timeout handling**: Available via `python3 -m cli timeout` commands
 - ✅ **Watch mode**: Real-time status monitoring with `--watch` flag
+
+**Phase 4 - Cross-Platform (v2.1+):**
+- ✅ **Windows support**: Native Windows process management (no WSL required)
+- ✅ **Agent decoupling**: Configuration-driven agent execution
+- ✅ **Pure Python timeout**: No shell script dependencies
+- ✅ **Defensive logging**: Debug output for troubleshooting cross-platform issues
 
 ### ⏳ Current Limitations
 

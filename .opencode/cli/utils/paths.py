@@ -10,10 +10,13 @@ PLANS_DIR = BASE_PATH / "plans"
 LOGS_DIR = BASE_PATH / "logs"
 WORKSPACE_DIR = BASE_PATH / "workspace"
 
-# Script paths
+# Script paths (legacy - kept for backward compatibility)
 SCRIPTS_DIR = Path(".opencode/scripts")
 RUN_WITH_TIMEOUT_SH = SCRIPTS_DIR / "run-with-timeout.sh"
 RUN_WITH_TIMEOUT_PS1 = SCRIPTS_DIR / "run-with-timeout.ps1"
+
+# Configuration files
+AGENT_CONFIG_PATH = Path(".opencode/agent-config.json")
 
 
 def ensure_directories():
