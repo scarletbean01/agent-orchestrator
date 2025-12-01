@@ -28,22 +28,26 @@ You are the Parallel Task Launcher.
 
 4.  **Launch Each Task:**
     - For each pending task found (up to AVAILABLE_SLOTS):
-      a. Update its status to `"running"` in the JSON file
-      b. Extract TASK_ID, PROMPT, and AGENT_NAME from JSON
+      a. Update its status to `"running"` AND set `"startedAt": "<ISO_TIMESTAMP>"` in the JSON file
+      b. Extract TASK_ID, PROMPT, AGENT_NAME from JSON
       c. Launch the task in background:
          ```bash
-         opencode run "Your Task ID is $TASK_ID. Task: $PROMPT. Signal completion by creating .gemini/agents/tasks/$TASK_ID.done" --agent $AGENT_NAME >> .gemini/agents/logs/$TASK_ID.log 2>&1 &
+         TIMEOUT=$(jq -r '.timeout // "null"' .gemini/agents/tasks/$TASK_ID.json)
+         
+         .opencode/scripts/run-with-timeout.sh "$TASK_ID" "$TIMEOUT" "$AGENT_NAME" "$PROMPT" >> ".gemini/agents/logs/$TASK_ID.log" 2>&1 &
+         
+         PID=$!
          ```
-      d. Capture the PID: `PID=$!`
-      e. Update the JSON file with the PID
-      f. Add TASK_ID to a list of started tasks
+      d. Update the JSON file with the PID
+      e. Add TASK_ID to a list of started tasks
 
 5.  **Report:**
     - If no pending tasks found: "No pending tasks to launch."
     - If tasks were launched: "Started N task(s): task_123, task_456, task_789 (PIDs: 12345, 12346, 12347)"
     - Include current utilization: "Running: X/Y tasks"
+    - For tasks with timeouts, list: "Timeouts: task_123 (5m), task_456 (1h)"
 
 **NOTES:**
-- If the `opencode` CLI is not in PATH, use absolute path
-- Ensure proper JSON formatting when updating files
-- Handle edge cases: no pending tasks, max concurrent already reached
+- The helper script handles GNU timeout logic and sentinel file creation
+- Exit codes are captured for timeout detection (124 = timeout)
+- Always record startedAt timestamp for elapsed time tracking

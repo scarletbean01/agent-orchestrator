@@ -12,7 +12,7 @@ The Agent Orchestrator Framework is a task queue management system for AI agents
 
 ```
 .gemini/agents/
-├── tasks/          # Task definition JSON files and sentinel files (.done, .error, .cancelled)
+├── tasks/          # Task definition JSON files and sentinel files (.done, .error, .cancelled, .timeout, .exitcode)
 ├── plans/          # Markdown plan files for each task
 ├── logs/           # Execution logs for each task
 └── workspace/      # Output directory for agent-generated code
@@ -25,7 +25,10 @@ The Agent Orchestrator Framework is a task queue management system for AI agents
 │   ├── agent-status.md
 │   ├── agent-retry.md         # NEW (Phase 2): Retry failed tasks
 │   ├── agent-cancel.md
-│   └── agent-clean.md
+│   ├── agent-clean.md
+│   └── agent-timeout.md       # NEW (Phase 2): Timeout management
+├── scripts/        # Helper scripts
+│   └── run-with-timeout.sh    # Wrapper for executing tasks with GNU timeout
 └── agent/          # Sub-agent definitions
     └── coder.md
 ```
@@ -47,13 +50,14 @@ Sub-agents are specialized agents defined in `.opencode/agent/` that perform act
 
 #### 3. Custom Commands
 Custom commands are defined in `.opencode/command/` and act as the user interface to the orchestrator:
-- **`/agent:start`**: Queues a new task (with optional retry/priority settings)
+- **`/agent:start`**: Queues a new task (with optional retry/priority/timeout settings)
 - **`/agent:run`**: Executes the next pending task
 - **`/agent:run-parallel`**: Executes multiple pending tasks concurrently (NEW - Phase 2)
-- **`/agent:status`**: Shows task queue status, reconciles completed tasks, detects failures, and triggers auto-retries
+- **`/agent:status`**: Shows task queue status, reconciles completed tasks, detects failures/timeouts, and triggers auto-retries
 - **`/agent:retry`**: Manually retries a failed task (NEW - Phase 2)
 - **`/agent:cancel`**: Cancels a running or pending task
 - **`/agent:clean`**: Removes old task files based on filter criteria
+- **`/agent:timeout`**: Manually manages task timeouts (NEW - Phase 2)
 
 ## Workflow
 
@@ -64,7 +68,7 @@ Custom commands are defined in `.opencode/command/` and act as the user interfac
 **What Happens:**
 1. The command invokes the "Setup Assistant" role
 2. Generates a unique task ID using timestamp: `task_<timestamp>`
-3. Parses optional flags: `--max-retries N`, `--auto-retry`, `--priority N`
+3. Parses optional flags: `--max-retries N`, `--auto-retry`, `--priority N`, `--timeout N`
 4. Creates a task definition file at `.gemini/agents/tasks/<Task_ID>.json`:
    ```json
    {
@@ -79,6 +83,8 @@ Custom commands are defined in `.opencode/command/` and act as the user interfac
      "maxRetries": 3,
      "autoRetry": false,
      "priority": 5,
+     "timeout": 3600,
+     "timeoutWarning": 60,
      "parentTaskId": null
    }
    ```
@@ -88,7 +94,7 @@ Custom commands are defined in `.opencode/command/` and act as the user interfac
 **Key Points:**
 - Tasks start in `pending` status
 - Each task gets a unique ID, plan file, and log file path
-- Optional retry and priority settings can be configured at creation
+- Optional retry, priority, and timeout settings can be configured at creation
 - Multiple tasks can be queued
 
 ### 2. Task Execution (`/agent:run`)
@@ -98,10 +104,10 @@ Custom commands are defined in `.opencode/command/` and act as the user interfac
 **What Happens:**
 1. The command invokes the "Master Orchestrator" role
 2. Scans `.gemini/agents/tasks/` for the oldest `pending` task (by file timestamp)
-3. Updates the task status to `running` in the JSON file
-4. Launches the specified sub-agent asynchronously in the background:
+3. Updates the task status to `running` in the JSON file and records `startedAt`
+4. Launches the specified sub-agent asynchronously via the `run-with-timeout.sh` helper script:
    ```bash
-   opencode run "Your Task ID is $TASK_ID. Task: $PROMPT. Signal completion by creating .gemini/agents/tasks/$TASK_ID.done" --agent $AGENT_NAME >> .gemini/agents/logs/$TASK_ID.log 2>&1 &
+   .opencode/scripts/run-with-timeout.sh "$TASK_ID" "$TIMEOUT" "$AGENT_NAME" "$PROMPT" >> ".gemini/agents/logs/$TASK_ID.log" 2>&1 &
    ```
 5. Records the process PID in the task JSON
 6. Responds: "Started task <Task_ID> (PID: <PID>)."
@@ -109,6 +115,8 @@ Custom commands are defined in `.opencode/command/` and act as the user interfac
 **Key Points:**
 - Only one task is executed per `/agent:run` invocation
 - Tasks run asynchronously in the background
+- **GNU Timeout**: If a timeout is specified, the task is wrapped in `timeout -k 5s <DURATION>s`
+- **Exit Codes**: The wrapper captures exit codes; 124 indicates a timeout
 - All output is logged to the task's log file
 - The task prompt includes instructions for the agent to create a `.done` sentinel file
 
@@ -141,8 +149,8 @@ Custom commands are defined in `.opencode/command/` and act as the user interfac
 2. Counts currently running tasks
 3. Calculates available slots: `max_concurrent - running_count`
 4. Finds the oldest pending tasks (up to available slots)
-5. Launches each task in the background (same as `/agent:run`)
-6. Records PIDs for all launched tasks
+5. Launches each task in the background (same as `/agent:run`, using helper script)
+6. Records PIDs and `startedAt` timestamps for all launched tasks
 7. Responds: "Started N task(s): task_123, task_456 (PIDs: 12345, 12346)"
 
 **Key Points:**
@@ -166,6 +174,7 @@ Custom commands are defined in `.opencode/command/` and act as the user interfac
    - Linked via `parentTaskId` to original task
    - Optional `autoRetry` flag for automatic future retries
    - Updated `retryHistory` with failure details
+   - Inherited timeout settings
 6. Creates a plan file documenting the retry attempt
 7. Updates original task with `retriedBy` field
 8. Responds: "Task task_XXX created as retry for task_YYY (attempt 2/3)"
@@ -182,15 +191,16 @@ Custom commands are defined in `.opencode/command/` and act as the user interfac
 **Command File:** `.opencode/command/agent-status.md`
 
 **What Happens:**
-1. The command invokes the "Status Reporter and Auto-Retry Manager" role
+1. The command invokes the "Status Reporter, Timeout Manager, and Auto-Retry Manager" role
 2. **Reconciliation Phase:**
    - Finds all tasks with `"status": "running"`
    - Checks if a corresponding `.done` file exists → updates to `complete`
    - Checks if a corresponding `.error` file exists → updates to `failed` and captures error message
    - Checks if a corresponding `.cancelled` file exists → updates to `cancelled`
+   - **Timeout Check:** Checks for `.timeout` sentinel file (created by wrapper script) or exit code 124
    - Checks if PID is still alive → if process died without sentinel file, marks as `failed`
 3. **Auto-Retry Phase (NEW - Phase 2):**
-   - For each newly failed task with `autoRetry: true`:
+   - For each newly failed task (including timeouts) with `autoRetry: true`:
      - Checks if `retryCount < maxRetries`
      - Calculates exponential backoff delay (2^retryCount seconds)
      - If delay has elapsed, automatically creates retry task
@@ -200,13 +210,15 @@ Custom commands are defined in `.opencode/command/` and act as the user interfac
    - Outputs a Markdown table with columns:
      - ID (with ↻ symbol for retry tasks)
      - Agent
-     - Status (✓ complete, ✗ failed, ⏱ running, ⏸ pending, ⊗ cancelled, 🔄 auto-retry)
+     - Status (✓ complete, ✗ failed, ⏱ running, ⏸ pending, ⊗ cancelled, 🔄 auto-retry, ⏱⚠ timeout)
      - Prompt (truncated summary)
+     - Time (elapsed / timeout)
      - Retry (shows "N/M" if retryCount > 0)
      - Error/Info (error message or retry countdown)
 5. **Summary Statistics:**
    - Total, running, pending, completed, failed counts
    - Number of failed tasks with auto-retry enabled
+   - Number of timed-out tasks
 
 **Key Points:**
 - Reconciliation happens on-demand, not automatically
@@ -216,6 +228,20 @@ Custom commands are defined in `.opencode/command/` and act as the user interfac
 - Exponential backoff prevents thrashing (2s, 4s, 8s, 16s...)
 - Old completed tasks remain in the system unless manually cleaned
 
+### 7. Timeout Management (`/agent:timeout <cmd> [args]`)
+
+**Command File:** `.opencode/command/agent-timeout.md` (NEW - Phase 2)
+
+**What Happens:**
+- `/agent:timeout <task_id>`: Immediately terminates a task as timed out
+- `/agent:timeout list`: Shows all tasks with timeouts and their remaining time
+- `/agent:timeout extend <task_id> <seconds>`: Adds time to a running task's timeout
+
+**Key Points:**
+- Allows manual intervention for long-running tasks
+- **Extend Limitation**: Because GNU timeout is used, extending a running task requires cancellation and restart
+- Integrates with auto-retry (manually timed out tasks can still auto-retry if enabled)
+
 ## Task States
 
 Tasks can be in one of five states:
@@ -223,7 +249,7 @@ Tasks can be in one of five states:
 1. **`pending`**: Task created but not yet started
 2. **`running`**: Task is being executed by a sub-agent (process is active)
 3. **`complete`**: Task finished successfully (reconciled via `.done` file)
-4. **`failed`**: Task failed (process died, error occurred, or explicit failure via `.error` file)
+4. **`failed`**: Task failed (process died, error occurred, timeout, or explicit failure via `.error` file)
 5. **`cancelled`**: Task was cancelled by user via `/agent:cancel`
 
 ## Error Handling and Task Management (Phase 1)
@@ -235,6 +261,7 @@ The `/agent:status` command now performs comprehensive health checks:
 - **Process Health**: Checks if PIDs for running tasks are still alive using `ps -p $PID`
 - **Error Detection**: Detects `.error` sentinel files created by failing agents
 - **Cancellation Detection**: Recognizes `.cancelled` files from cancelled tasks
+- **Timeout Detection**: Checks elapsed time against timeout limits
 - **Automatic Failover**: Updates tasks to `failed` state when process dies unexpectedly
 
 ### Task Cancellation (`/agent:cancel <task_id>`)
@@ -305,7 +332,7 @@ Remove old task files to keep the workspace clean:
 
 ### Enhanced Task JSON Schema
 
-Tasks now include retry tracking, priority, and error tracking fields:
+Tasks now include retry tracking, priority, timeout, and error tracking fields:
 
 ```json
 {
@@ -317,14 +344,17 @@ Tasks now include retry tracking, priority, and error tracking fields:
   "logFile": ".gemini/agents/logs/task_1234567890.log",
   "createdAt": "2025-12-01T10:00:00Z",
   "pid": "12345",
-  "errorMessage": "Process terminated unexpectedly",
+  "errorMessage": "Task timed out after 3600 seconds",
   "retryCount": 1,
   "maxRetries": 3,
   "autoRetry": true,
   "priority": 5,
+  "timeout": 3600,
+  "startedAt": "2025-12-01T10:00:00Z",
+  "timedOutAt": "2025-12-01T11:00:00Z",
   "parentTaskId": "task_1234567000",
   "retriedBy": "task_1234567999",
-  "retriedAt": "2025-12-01T10:05:00Z",
+  "retriedAt": "2025-12-01T11:05:00Z",
   "retryHistory": [
     {
       "attempt": 1,
@@ -538,6 +568,34 @@ Tasks now include retry tracking, priority, and error tracking fields:
 # Started 2 task(s): task_12349, task_12350
 ```
 
+### Example 9: Task Timeout Management (Phase 2)
+```bash
+# Start a task with a timeout (e.g., 5 minutes = 300s)
+/agent:start coder "Run infinite loop" --timeout 300
+# Task task_12345 created... Timeout: 300s (5m)
+
+/agent:run
+# Started task task_12345...
+
+# Check status - shows elapsed time and limit
+/agent:status
+# | ID         | Agent | Status | Prompt             | Time        |
+# | task_12345 | coder | ⏱      | Run infinite...    | 2m / 5m     |
+
+# Extend timeout if needed
+/agent:timeout extend task_12345 300
+# Extended timeout for task task_12345 by 300s (new limit: 600s, 10m)
+
+# Force timeout immediately
+/agent:timeout task_12345
+# Task task_12345 timed out (PID: 12345 terminated)
+
+# Status reflects timeout
+/agent:status
+# | ID         | Agent | Status | Prompt             | Time        | Error              |
+# | task_12345 | coder | ✗      | Run infinite...    | ⏱ timeout   | Manually timed out |
+```
+
 ## Extending the Framework
 
 ### Adding a New Sub-Agent
@@ -561,9 +619,9 @@ Tasks now include retry tracking, priority, and error tracking fields:
 ### Resolved (Phase 2)
 - ✅ **Parallel execution**: Now available via `/agent:run-parallel` command with configurable concurrency
 - ✅ **Retry mechanism**: Now available via `/agent:retry` command with auto-retry and exponential backoff
+- ✅ **Timeout handling**: Now available via automatic detection and `/agent:timeout` manual command
 
 ### Current Limitations
 - **No automatic cleanup**: Completed tasks remain until manually removed via `/agent:clean`
 - **No task prioritization**: Tasks execute in FIFO order (oldest first) - priority field exists but not yet used
 - **Manual reconciliation**: Status updates require explicit `/agent:status` call
-- **No timeout handling**: Long-running tasks are not automatically terminated
