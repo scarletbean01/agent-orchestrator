@@ -30,14 +30,27 @@ You are the Parallel Task Launcher.
     - For each pending task found (up to AVAILABLE_SLOTS):
       a. Update its status to `"running"` AND set `"startedAt": "<ISO_TIMESTAMP>"` in the JSON file
       b. Extract TASK_ID, PROMPT, AGENT_NAME from JSON
-      c. Launch the task in background:
-         ```bash
-         TIMEOUT=$(jq -r '.timeout // "null"' .gemini/agents/tasks/$TASK_ID.json)
+      c. **Launch Task (OS-Dependent):**
+         - Detect the execution environment by checking for `jq` or the `<env>` context.
          
-         .opencode/scripts/run-with-timeout.sh "$TASK_ID" "$TIMEOUT" "$AGENT_NAME" "$PROMPT" >> ".gemini/agents/logs/$TASK_ID.log" 2>&1 &
+         - **If `jq` is available OR Platform is "linux" or "darwin":**
+           - Use the Bash script:
+           ```bash
+           TIMEOUT=$(jq -r '.timeout // "null"' .gemini/agents/tasks/$TASK_ID.json)
+           .opencode/scripts/run-with-timeout.sh "$TASK_ID" "$TIMEOUT" "$AGENT_NAME" "$PROMPT" >> ".gemini/agents/logs/$TASK_ID.log" 2>&1 &
+           PID=$!
+           ```
          
-         PID=$!
-         ```
+         - **If `jq` is NOT available AND Platform is "windows":**
+           - Use the hybrid approach for Git Bash on Windows:
+           ```bash
+           TIMEOUT=$(powershell -Command "(Get-Content .gemini/agents/tasks/$TASK_ID.json | ConvertFrom-Json).timeout")
+           if [ -z "$TIMEOUT" ] || [ "$TIMEOUT" = "" ]; then TIMEOUT="null"; fi
+           
+           powershell -ExecutionPolicy Bypass -Command "Start-Process -NoNewWindow -FilePath 'powershell' -ArgumentList '-ExecutionPolicy','Bypass','-File','.opencode/scripts/run-with-timeout.ps1','-TaskId','$TASK_ID','-Timeout','$TIMEOUT','-AgentName','$AGENT_NAME','-Prompt', ''''$PROMPT'''' -RedirectStandardOutput '.gemini/agents/logs/$TASK_ID.log' -RedirectStandardError '.gemini/agents/logs/$TASK_ID.log' -PassThru | Select-Object -ExpandProperty Id | Out-File -FilePath '.gemini/agents/tasks/$TASK_ID.pid' -NoNewline"
+           
+           PID=$(cat .gemini/agents/tasks/$TASK_ID.pid)
+           ```
       d. Update the JSON file with the PID
       e. Add TASK_ID to a list of started tasks
 

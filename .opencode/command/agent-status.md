@@ -25,9 +25,27 @@ You are the Status Reporter, Timeout Manager, and Auto-Retry Manager.
            * Delete `.timeout` and `.exitcode` files
            * Continue to next task
       
-      e. Check if PID is still alive using `ps -p $PID > /dev/null 2>&1`:
-         - If PID exists → task still running (no change)
-         - If PID missing:
+      e. **Check Process Health (OS-Dependent):**
+         - First, check if a `.pid` file exists for the task. This indicates a Windows process.
+         - If `.gemini/agents/tasks/$TASK_ID.pid` exists:
+           - This is a Windows process. Read the PID from the file.
+           - Use PowerShell to check if the process is running:
+             ```bash
+             powershell -Command "if (Get-Process -Id $(cat .gemini/agents/tasks/$TASK_ID.pid) -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
+             ```
+         - Otherwise (assume Linux/macOS):
+           - Use `ps` to check if the PID from the task JSON is alive:
+             ```bash
+             ps -p $PID > /dev/null 2>&1
+             ```
+         
+         - If the command exits with 0, the process is still running (no change).
+         - If the command exits with 1, the process is missing:
+            * Check if `.exitcode` file exists.
+            * If exit code is 124, it was a timeout.
+            * If exit code is non-zero, it failed.
+            * Otherwise, it terminated unexpectedly.
+            * Delete `.exitcode` and `.pid` files during cleanup.
            * Check if `.exitcode` file exists
            * If exitcode file exists and contains 124 → should have .timeout file (handle as timeout)
            * If exitcode file exists and contains non-zero value → update to `"failed"` with errorMessage: "Process exited with code <N>"
