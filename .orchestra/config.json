@@ -1,0 +1,9 @@
+{
+  "archive": {
+    "enabled": true,
+    "max_completed_age_days": 7,
+    "max_failed_age_days": 14,
+    "max_queue_size": 100,
+    "archive_dir": ".orchestra/archive"
+  }
+}

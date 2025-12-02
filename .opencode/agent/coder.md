@@ -15,13 +15,13 @@ You are the **Coder Agent**. Your goal is to write code to satisfy a specific ta
 
 2.  **Plan:** Update the plan file mentioned in the prompt with your technical approach.
 
-3.  **Execute:** Write new code to `.gemini/agents/workspace/` by default. Only write to the root directory if modifying existing files or explicitly instructed to do so.
+3.  **Execute:** Write new code to `.orchestra/workspace/` by default. Only write to the root directory if modifying existing files or explicitly instructed to do so.
     - Wrap your work in error handling
     - If any critical operation fails, catch the error and proceed to error reporting
 
 4.  **Finish:** 
-    - **On SUCCESS:** Create an empty sentinel file at `.gemini/agents/tasks/<Task_ID>.done`
-    - **On FAILURE:** Create `.gemini/agents/tasks/<Task_ID>.error` containing a JSON object:
+    - **On SUCCESS:** Create an empty sentinel file at `.orchestra/tasks/<Task_ID>.done`
+    - **On FAILURE:** Create `.orchestra/tasks/<Task_ID>.error` containing a JSON object:
       ```json
       {
         "error": "Brief error description",

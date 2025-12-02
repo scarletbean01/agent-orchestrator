@@ -1,4 +1,9 @@
-.opencode/bun.lock
-.opencode/node_modules/
+.orchestra-cli/bun.lock
+.orchestra-cli/node_modules/
 __pycache__/
 .idea/
+
+# Legacy paths (for transition period)
+.opencode/bun.lock
+.opencode/node_modules/
+.gemini/

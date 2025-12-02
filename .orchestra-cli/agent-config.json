@@ -1,0 +1,15 @@
+{
+  "agents": {
+    "coder": {
+      "command": "opencode",
+      "args": ["run", "{prompt}", "--agent", "coder"],
+      "description": "Default OpenCode agent for code generation"
+    },
+    "auggie": {
+      "command": "auggie",
+      "args": ["-i", "{prompt}", "-w", ".", "--model", "sonnet4.5", "-p"],
+      "description": "Augment CLI agent (Sonnet 4.5)",
+      "promptTemplateFile": ".orchestra-cli/prompts/auggie.txt"
+    }
+  }
+}
